@@ -101,6 +101,38 @@ function writeFile(localPath, data) {
   fs.writeFileSync(full, data);
 }
 
+// vite-react-ssg reads window.__VITE_REACT_SSG_HASH__ from an inline script the
+// build places at the END of <body>. The app bundle is an async module in
+// <head>; on a fast CDN it can execute BEFORE that end-of-body script runs, so
+// the hash reads `undefined` and the app fetches
+// static-loader-data-manifest-undefined.json (404 -> non-JSON body ->
+// "Unexpected token ... is not valid JSON"). Hoist a synchronous copy of the
+// assignment into <head> so the hash is always defined before the bundle runs.
+function hoistSsgHash(html) {
+  const m = html.match(/window\.__VITE_REACT_SSG_HASH__\s*=\s*(['"])([^'"]+)\1/);
+  if (!m) return html;
+  const inject = `<script>window.__VITE_REACT_SSG_HASH__ = ${m[1]}${m[2]}${m[1]};</script>`;
+  let injected = false;
+  const out = html.replace(/<head([^>]*)>/i, (match) => {
+    injected = true;
+    return match + inject;
+  });
+  return injected ? out : html;
+}
+
+// Prepare a raw SSR response body (kept verbatim for streaming-SSR frameworks)
+// for static serving: drop any <base> tag and strip Lovable's analytics beacons.
+// App assets are referenced root-relative (/assets/...), so they resolve as-is
+// once served from the site root — no URL rewriting required.
+function prepareRawSsr(html) {
+  html = html.replace(/<base\b[^>]*>/gi, '');
+  html = html.replace(
+    /<script\b[^>]*(?:src="\/(?:~flock|__l5e\/)[^"]*"|data-proxy-url|data-context-token)[^>]*>\s*<\/script>/gi,
+    '',
+  );
+  return html;
+}
+
 // ============================================================================
 (async () => {
   console.log(`Origin    : ${ORIGIN}`);
@@ -115,6 +147,7 @@ function writeFile(localPath, data) {
   const pageQueue = [startUrl.replace(/#.*$/, '')];
   const assets = new Map();        // abs -> local
   let count = 0;
+  let ssgHash = null;              // vite-react-ssg build hash, if detected
 
   // --------------------------------------------------------- 1) crawl pages
   while (pageQueue.length && count < MAX_PAGES) {
@@ -126,11 +159,17 @@ function writeFile(localPath, data) {
 
     process.stdout.write(`[${count}] ${url} ... `);
     try {
+      let response;
       try {
-        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+        response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
       } catch {
-        await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+        response = await page.goto(url, { waitUntil: 'load', timeout: 30000 });
       }
+      // Keep the raw SSR response body: streaming-SSR frameworks (TanStack
+      // Start) inject a self-deleting hydration bootstrap that is gone from the
+      // post-hydration DOM snapshot below — only the raw body still has it.
+      let rawBody = '';
+      try { rawBody = response ? await response.text() : ''; } catch { /* */ }
 
       // rewrite the DOM to root-relative paths + return assets & pages
       const result = await page.evaluate(({ origin, keepJs }) => {
@@ -188,6 +227,16 @@ function writeFile(localPath, data) {
         // JavaScript: removed by default; with --js keep both external and inline scripts
         document.querySelectorAll('script').forEach((el) => {
           if (!keepJs) { el.remove(); return; }
+          const rawSrc = el.getAttribute('src') || '';
+          // Drop Lovable's deployment-analytics beacons: they POST to
+          // Lovable-internal endpoints (/~api/analytics, /__l5e/trackevents)
+          // that 404 on the copy and spam the console for nothing.
+          if (/(^|\/)(~flock|~api\/|__l5e\/)/.test(rawSrc) ||
+              el.hasAttribute('data-proxy-url') ||
+              el.hasAttribute('data-context-token')) {
+            el.remove();
+            return;
+          }
           if (el.src && isHttp(el.src)) el.setAttribute('src', assetRef(el.src));
           // inline scripts (no src) are kept as-is (e.g. Vite module bootstrap)
         });
@@ -237,11 +286,35 @@ function writeFile(localPath, data) {
           }
         });
 
-        return { assets, pages };
+        // vite-react-ssg exposes the build hash on window; it is needed to
+        // locate the runtime-fetched static loader-data manifest + files,
+        // whose URLs are built dynamically and never appear as literals.
+        const ssgHash = window.__VITE_REACT_SSG_HASH__ || null;
+
+        return { assets, pages, ssgHash };
       }, { origin: ORIGIN, keepJs: KEEP_JS });
 
-      // rendered HTML (with links already rewritten)
-      const html = await page.content();
+      if (result.ssgHash && !ssgHash) ssgHash = result.ssgHash;
+
+      // Choose which HTML to persist:
+      //  - Server-rendered pages (React Router SSR / vite-react-ssg via
+      //    __staticRouterHydrationData, or TanStack Start via $_TSR): React
+      //    consumes and REMOVES the hydration data from the DOM during
+      //    hydration. page.content() is captured post-hydration, so that data is
+      //    gone from the snapshot; re-serving it makes React try to hydrate a
+      //    page marked data-server-rendered=true with no hydration data, which
+      //    throws ("Unexpected token ... is not valid JSON" banner, or blank
+      //    page for TanStack). Keep the RAW SSR body, which still carries it.
+      //    Assets are root-relative so no DOM rewriting is needed; asset/link
+      //    discovery still happens via the page.evaluate pass above.
+      //  - otherwise (plain SPA): the DOM snapshot with links/assets rewritten.
+      // hoistSsgHash still runs on the raw body: vite-react-ssg reads its build
+      // hash from an end-of-<body> script that the async bundle can outrun on a
+      // fast CDN (→ manifest-undefined.json 404); hoisting it into <head> is a
+      // no-op for the other cases.
+      const isServerRendered = /\$tsr-stream-barrier|self\.\$_TSR|__staticRouterHydrationData|data-server-rendered/.test(rawBody);
+      const baseHtml = isServerRendered ? prepareRawSsr(rawBody) : await page.content();
+      const html = hoistSsgHash(baseHtml);
       const u = new URL(url);
       let p = u.pathname;
       const last = p.split('/').pop();
@@ -262,6 +335,40 @@ function writeFile(localPath, data) {
   }
 
   if (pageQueue.length) console.log(`\n⚠  Limit of ${MAX_PAGES} pages reached, ${pageQueue.length} remaining ignored (increase --max).`);
+
+  // ------------------------------------ 1b) vite-react-ssg static loader data
+  // These sites (Lovable) fetch a per-route data manifest + JSON files at
+  // runtime; their URLs are built dynamically so the HTML/JS scans above never
+  // find them. Without them the deployed copy 404s on navigation and the app
+  // crashes trying to JSON.parse the host's 404 page. Fetch them explicitly.
+  if (ssgHash) {
+    const manifestLocal = `static-loader-data-manifest-${ssgHash}.json`;
+    const manifestUrl = `${ORIGIN}/${manifestLocal}`;
+    process.stdout.write(`\nvite-react-ssg detected (hash ${ssgHash}); fetching loader data ... `);
+    try {
+      const resp = await context.request.get(manifestUrl, { timeout: 30000 });
+      if (!resp.ok()) {
+        console.log(`manifest HTTP ${resp.status()}, skipped.`);
+      } else {
+        const body = await resp.body();
+        writeFile(manifestLocal, body);
+        const manifest = JSON.parse(body.toString('utf8'));
+        // manifest maps route -> relative data-file path (e.g.
+        // "static-loader-data/index.<hash>.json"). Enqueue each for download.
+        let added = 0;
+        for (const rel of Object.values(manifest)) {
+          if (typeof rel !== 'string') continue;
+          const clean = rel.replace(/^\/+/, '');
+          let abs;
+          try { abs = new URL('/' + clean, ORIGIN).href; } catch { continue; }
+          if (!assets.has(abs)) { assets.set(abs, clean); added++; }
+        }
+        console.log(`OK (manifest + ${added} data file(s)).`);
+      }
+    } catch (e) {
+      console.log(`FAILED: ${e.message}`);
+    }
+  }
 
   // ----------------------------------------------------- 2) download assets
   console.log(`\nDownloading assets (${assets.size})...`);
