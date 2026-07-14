@@ -1,0 +1,20 @@
+# Standalone compose file for the prerender-manager app.
+#   docker compose up -d --build
+services:
+  prerender-manager:
+    build: .
+    env_file:
+      - ./.env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATA_DIR: /app/data
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persist site config, cloned output and logs across restarts.
+      - prerender_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  prerender_data:

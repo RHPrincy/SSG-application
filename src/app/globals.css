@@ -1,0 +1,81 @@
+@import 'tailwindcss';
+
+/*
+ * Design direction: high-end "developer tool" admin — precise, minimal, dark.
+ * One dominant neutral (warm charcoal) + a single gold accent. Semantic status
+ * colours (emerald / rose / slate) are kept distinct from the brand accent so
+ * "à jour" vs "obsolète" vs "inconnu" read instantly.
+ */
+@theme {
+  --color-bg: #0b0c0e;
+  --color-surface: #131519;
+  --color-elevated: #191c22;
+  --color-border: #262b33;
+  --color-border-strong: #333a44;
+  --color-ink: #eceef1;
+  --color-muted: #949ba6;
+  --color-faint: #616872;
+
+  --color-accent: #f5a524;
+  --color-accent-fg: #120d02;
+  --color-accent-soft: #2a2113;
+
+  --color-ok: #34d399;
+  --color-ok-soft: #10231c;
+  --color-stale: #fb7185;
+  --color-stale-soft: #2a1319;
+  --color-unknown: #94a3b8;
+  --color-unknown-soft: #1a1f27;
+  --color-danger: #f87171;
+
+  --font-display: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-hanken), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+
+  --radius: 0.75rem;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* Subtle dotted texture — barely-there depth, not noise. */
+  background-image: radial-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 22px 22px;
+  min-height: 100vh;
+}
+
+h1, h2, h3, h4, .font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Custom scrollbar for log panels. */
+.scroll-thin::-webkit-scrollbar { width: 10px; height: 10px; }
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 999px;
+  border: 2px solid var(--color-surface);
+}
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in { animation: fade-in 0.35s ease both; }
+
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.animate-pulse-soft { animation: pulse-soft 1.4s ease-in-out infinite; }

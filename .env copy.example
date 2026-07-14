@@ -1,0 +1,36 @@
+# =============================================================================
+#  prerender-manager — server-side environment variables
+#  Copy this file to `.env` and fill in the real values.
+#  NONE of these are exposed to the browser. Never commit `.env`.
+# =============================================================================
+
+# --- Authentication ----------------------------------------------------------
+# Access code required on the login screen. Verified server-side only.
+ACCESS_CODE=randimbimanana@princy.com
+
+# Secret used to sign the session JWT (HS256). Use a long random string.
+# Generate one with:  openssl rand -base64 48
+AUTH_SECRET=change-me-to-a-long-random-secret
+
+# Lifetime of an issued session token.
+TOKEN_TTL=8h
+
+# --- Vercel deployment -------------------------------------------------------
+# Personal / team token from https://vercel.com/account/tokens
+VERCEL_TOKEN=
+
+# Optional: pin deployments to a specific Vercel team/scope and project.
+# If you use `vercel link` per project these can stay empty.
+VERCEL_ORG_ID=
+VERCEL_SCOPE=
+
+# Path to the Vercel CLI binary (default: the `vercel` on PATH).
+VERCEL_BIN=vercel
+
+# --- Runtime paths -----------------------------------------------------------
+# Where site state, cloned output and logs are persisted on the VPS.
+# Must be writable and, in Docker, mounted as a volume to survive restarts.
+DATA_DIR=./data
+
+# Path to the pre-rendering script (reused as-is).
+CLONE_SCRIPT=./scripts/clone.js

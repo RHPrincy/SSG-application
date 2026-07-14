@@ -1,0 +1,25 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next
+/out
+
+# production build
+/build
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# runtime state & cloned output (persisted on the VPS, never committed)
+/data/*
+!/data/.gitkeep
+
+# vercel cli state
+.vercel
+
+# misc
+*.log
+.DS_Store
