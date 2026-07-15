@@ -120,16 +120,27 @@ function hoistSsgHash(html) {
   return injected ? out : html;
 }
 
-// Prepare a raw SSR response body (kept verbatim for streaming-SSR frameworks)
-// for static serving: drop any <base> tag and strip Lovable's analytics beacons.
-// App assets are referenced root-relative (/assets/...), so they resolve as-is
-// once served from the site root — no URL rewriting required.
-function prepareRawSsr(html) {
+// Finalise the rendered-DOM snapshot for static serving. The goal is that the
+// saved HTML equals what the browser SHOWS (view-source == interface):
+//   - drop any <base> tag and Lovable's analytics beacons (defensive: the
+//     in-page pass already removes these when JS is kept);
+//   - strip the SSR/SSG *hydration scaffolding* so the source reads as clean
+//     pre-rendered HTML instead of "looking like SSR": the giant
+//     window.__staticRouterHydrationData JSON blob and the
+//     data-server-rendered="true" markers. The app bundle is still kept, so on
+//     load React simply takes over the pre-rendered DOM (client render / SSG
+//     re-render) — verified to keep accordions, dropdowns and client-side
+//     navigation working on the Lovable (vite-react-ssg) sites, with no
+//     hydration error. __VITE_REACT_SSG_HASH__ is deliberately preserved: the
+//     bundle needs it to fetch per-route loader data at runtime.
+function finalizeHtml(html) {
   html = html.replace(/<base\b[^>]*>/gi, '');
   html = html.replace(
     /<script\b[^>]*(?:src="\/(?:~flock|__l5e\/)[^"]*"|data-proxy-url|data-context-token)[^>]*>\s*<\/script>/gi,
     '',
   );
+  html = html.replace(/<script>\s*window\.__staticRouterHydrationData[\s\S]*?<\/script>/gi, '');
+  html = html.replace(/\sdata-server-rendered=(["'])[^"']*\1/gi, '');
   return html;
 }
 
@@ -159,17 +170,11 @@ function prepareRawSsr(html) {
 
     process.stdout.write(`[${count}] ${url} ... `);
     try {
-      let response;
       try {
-        response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
       } catch {
-        response = await page.goto(url, { waitUntil: 'load', timeout: 30000 });
+        await page.goto(url, { waitUntil: 'load', timeout: 30000 });
       }
-      // Keep the raw SSR response body: streaming-SSR frameworks (TanStack
-      // Start) inject a self-deleting hydration bootstrap that is gone from the
-      // post-hydration DOM snapshot below — only the raw body still has it.
-      let rawBody = '';
-      try { rawBody = response ? await response.text() : ''; } catch { /* */ }
 
       // rewrite the DOM to root-relative paths + return assets & pages
       const result = await page.evaluate(({ origin, keepJs }) => {
@@ -296,25 +301,20 @@ function prepareRawSsr(html) {
 
       if (result.ssgHash && !ssgHash) ssgHash = result.ssgHash;
 
-      // Choose which HTML to persist:
-      //  - Server-rendered pages (React Router SSR / vite-react-ssg via
-      //    __staticRouterHydrationData, or TanStack Start via $_TSR): React
-      //    consumes and REMOVES the hydration data from the DOM during
-      //    hydration. page.content() is captured post-hydration, so that data is
-      //    gone from the snapshot; re-serving it makes React try to hydrate a
-      //    page marked data-server-rendered=true with no hydration data, which
-      //    throws ("Unexpected token ... is not valid JSON" banner, or blank
-      //    page for TanStack). Keep the RAW SSR body, which still carries it.
-      //    Assets are root-relative so no DOM rewriting is needed; asset/link
-      //    discovery still happens via the page.evaluate pass above.
-      //  - otherwise (plain SPA): the DOM snapshot with links/assets rewritten.
-      // hoistSsgHash still runs on the raw body: vite-react-ssg reads its build
-      // hash from an end-of-<body> script that the async bundle can outrun on a
-      // fast CDN (→ manifest-undefined.json 404); hoisting it into <head> is a
-      // no-op for the other cases.
-      const isServerRendered = /\$tsr-stream-barrier|self\.\$_TSR|__staticRouterHydrationData|data-server-rendered/.test(rawBody);
-      const baseHtml = isServerRendered ? prepareRawSsr(rawBody) : await page.content();
-      const html = hoistSsgHash(baseHtml);
+      // Persist the fully-rendered DOM snapshot so the saved HTML equals what
+      // the interface displays (view-source == interface). This is the whole
+      // point of the clone: the visible content must be in the source.
+      //   - Plain SPA: the raw server response is an empty #root shell — only
+      //     the post-render snapshot carries the content.
+      //   - vite-react-ssg / React Router: the snapshot carries the content
+      //     too; finalizeHtml() then strips the hydration scaffolding so the
+      //     source reads as clean pre-rendered HTML rather than "looking like
+      //     SSR", while the kept JS bundle still powers dropdowns/navigation.
+      // hoistSsgHash still runs: vite-react-ssg reads its build hash from an
+      // end-of-<body> script that the async bundle can outrun on a fast CDN
+      // (→ manifest-undefined.json 404); hoisting it into <head> is a no-op
+      // elsewhere.
+      const html = hoistSsgHash(finalizeHtml(await page.content()));
       const u = new URL(url);
       let p = u.pathname;
       const last = p.split('/').pop();
